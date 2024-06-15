@@ -14,33 +14,57 @@
 #[cfg_attr(adc_v4, path = "v4.rs")]
 mod _version;
 
+dma_trait!(RxDma, Instance);
+
 #[allow(unused)]
 #[cfg(not(adc_f3_v2))]
 pub use _version::*;
+use embassy_hal_internal::PeripheralRef;
 
 #[cfg(not(any(adc_f1, adc_f3_v2)))]
 pub use crate::pac::adc::vals::Res as Resolution;
 pub use crate::pac::adc::vals::SampleTime;
 use crate::peripherals;
 
+use crate::dma::NoDma;
+
+use crate::pac::adc::Adc as Regs;
+
+mod ringbuffered;
+pub use ringbuffered::RingBufferedAdc;
+
 /// Analog to Digital driver.
-pub struct Adc<'d, T: Instance> {
+pub struct Adc<'d, T: Instance, RxDma = NoDma> {
     #[allow(unused)]
     adc: crate::PeripheralRef<'d, T>,
     #[cfg(not(any(adc_f3_v2, adc_f3_v1_1)))]
     sample_time: SampleTime,
+    dma: PeripheralRef<'d, RxDma>,
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub enum Error {
+    Overrun,
+}
+
+impl embedded_io::Error for Error {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        embedded_io::ErrorKind::Other
+    }
 }
 
 pub(crate) mod sealed {
-    #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1))]
+    #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1, adc_v4))]
     use embassy_sync::waitqueue::AtomicWaker;
 
-    #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1))]
+    #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1, adc_v4))]
     pub struct State {
         pub waker: AtomicWaker,
     }
 
-    #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1))]
+    #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1, adc_v4))]
     impl State {
         pub const fn new() -> Self {
             Self {
@@ -57,12 +81,12 @@ pub(crate) mod sealed {
         fn regs() -> crate::pac::adc::Adc;
         #[cfg(not(any(adc_f1, adc_v1, adc_l0, adc_f3_v2, adc_f3_v1_1, adc_g0)))]
         fn common_regs() -> crate::pac::adccommon::AdcCommon;
-        #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1))]
+        #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1, adc_v4))]
         fn state() -> &'static State;
     }
 
     pub trait AdcPin<T: Instance> {
-        #[cfg(any(adc_v1, adc_l0, adc_v2))]
+        #[cfg(any(adc_v1, adc_l0, adc_v2, adc_v4))]
         fn set_as_analog(&mut self) {}
 
         fn channel(&self) -> u8;
@@ -97,7 +121,7 @@ foreach_adc!(
                 return crate::pac::$common_inst
             }
 
-            #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1))]
+            #[cfg(any(adc_f1, adc_f3, adc_v1, adc_l0, adc_f3_v1_1, adc_v4))]
             fn state() -> &'static sealed::State {
                 static STATE: sealed::State = sealed::State::new();
                 &STATE

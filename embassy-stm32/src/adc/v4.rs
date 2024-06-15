@@ -127,10 +127,15 @@ impl Prescaler {
     }
 }
 
-impl<'d, T: Instance> Adc<'d, T> {
+impl<'d, T: Instance, RxDma> Adc<'d, T, RxDma> {
     /// Create a new ADC driver.
-    pub fn new(adc: impl Peripheral<P = T> + 'd, delay: &mut impl DelayUs<u16>) -> Self {
+    pub fn new(
+        adc: impl Peripheral<P = T> + 'd,
+        delay: &mut impl DelayUs<u16>,
+        dma: impl Peripheral<P = RxDma> + 'd,
+    ) -> Self {
         embassy_hal_internal::into_ref!(adc);
+        embassy_hal_internal::into_ref!(dma);
         T::enable_and_reset();
 
         let prescaler = Prescaler::from_ker_ck(T::frequency());
@@ -160,6 +165,7 @@ impl<'d, T: Instance> Adc<'d, T> {
         let mut s = Self {
             adc,
             sample_time: SampleTime::from_bits(0),
+            dma,
         };
         s.power_up(delay);
         s.configure_differential_inputs();
@@ -202,10 +208,25 @@ impl<'d, T: Instance> Adc<'d, T> {
     }
 
     fn enable(&mut self) {
+        // XXX from ST HAL:
+        // If ADEN bit is set less than 4 ADC clock cycles after the ADCAL bit has been cleared
+        // (after a calibration), ADEN bit is reset by the calibration logic. The workaround is to
+        // continue setting ADEN until ADRDY is becomes 1. Additionally, ADC_ENABLE_TIMEOUT is
+        // defined to encompass this 4 ADC clock cycle duration
         T::regs().isr().write(|w| w.set_adrdy(true));
         T::regs().cr().modify(|w| w.set_aden(true));
         while !T::regs().isr().read().adrdy() {}
         T::regs().isr().write(|w| w.set_adrdy(true));
+    }
+
+    fn disable(&mut self) {
+        // NOTE: forbidden to disable ADC (set_addis(true)) if ADC is already disabled
+        // TODO(mmskv): check that this check works
+
+        if !T::regs().cr().read().aden() {
+            T::regs().cr().modify(|w| w.set_addis(true));
+            T::regs().isr().write(|w| w.set_adrdy(false));
+        }
     }
 
     fn configure(&mut self) {
@@ -308,7 +329,7 @@ impl<'d, T: Instance> Adc<'d, T> {
         self.convert()
     }
 
-    fn set_channel_sample_time(ch: u8, sample_time: SampleTime) {
+    pub fn set_channel_sample_time(ch: u8, sample_time: SampleTime) {
         let sample_time = sample_time.into();
         if ch <= 9 {
             T::regs().smpr(0).modify(|reg| reg.set_smp(ch as _, sample_time));
